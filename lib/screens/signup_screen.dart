@@ -1,6 +1,8 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:qahwatahlly/screens/components/avatar.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:qahwatahlly/screens/components/avatar.dart';
+import 'package:path/path.dart' as path;
 
 class SignUpScreen extends StatefulWidget {
   const SignUpScreen({super.key});
@@ -16,22 +18,49 @@ class _SignUpScreenState extends State<SignUpScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _supabase = Supabase.instance.client;
-  String? _avatarUrl;
+  File? _selectedImage;
+  bool _isLoading = false;
+
+  Future<String?> _uploadAvatar() async {
+    if (_selectedImage == null) return null;
+
+    try {
+      final userId = _supabase.auth.currentUser!.id;
+      final imageExtension = path.extension(_selectedImage!.path).replaceAll('.', '');
+      final imagePath = '$userId-profile.$imageExtension';
+
+      await _supabase.storage.from('avatar-url').upload(
+            imagePath,
+            _selectedImage!,
+            fileOptions: const FileOptions(upsert: true),
+          );
+
+      return _supabase.storage.from('avatar-url').getPublicUrl(imagePath);
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('خطأ في رفع الصورة: $e')),
+      );
+      return null;
+    }
+  }
 
   Future<void> _signUp() async {
+    setState(() => _isLoading = true);
     try {
       final response = await _supabase.auth.signUp(
         email: _emailController.text,
         password: _passwordController.text,
       );
+
       if (response.user != null) {
+        final avatarUrl = await _uploadAvatar();
         await _supabase.from('profiles').insert({
           'id': response.user!.id,
           'full_name': _fullNameController.text,
           'username': _usernameController.text,
           'email': _emailController.text,
           'bio': _bioController.text,
-          'avatar_url': _avatarUrl,
+          'avatar_url': avatarUrl,
         });
         Navigator.pushReplacementNamed(context, '/home');
       }
@@ -39,6 +68,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('خطأ في إنشاء الحساب: $e')),
       );
+    } finally {
+      setState(() => _isLoading = false);
     }
   }
 
@@ -46,10 +77,6 @@ class _SignUpScreenState extends State<SignUpScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        // title: Container(
-        //   padding: const EdgeInsets.symmetric(vertical: 8.0),
-        //   child: Image.asset('assets/images/Logo.png', height: 40),
-        // ),
         centerTitle: true,
         backgroundColor: Colors.brown[800],
         elevation: 0,
@@ -67,10 +94,10 @@ class _SignUpScreenState extends State<SignUpScreen> {
             const SizedBox(height: 30),
             Center(
               child: Avatar(
-                imageUrl: _avatarUrl,
-                onUpload: (imageUrl) {
+                imageUrl: null,
+                onImageSelected: (imageFile) {
                   setState(() {
-                    _avatarUrl = imageUrl;
+                    _selectedImage = imageFile;
                   });
                 },
               ),
@@ -122,8 +149,10 @@ class _SignUpScreenState extends State<SignUpScreen> {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: _signUp,
-                child: const Text('إنشاء الحساب'),
+                onPressed: _isLoading ? null : _signUp,
+                child: _isLoading
+                    ? const CircularProgressIndicator(color: Colors.white)
+                    : const Text('إنشاء الحساب'),
               ),
             ),
             const SizedBox(height: 16),

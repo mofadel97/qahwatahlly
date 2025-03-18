@@ -1,19 +1,17 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:path/path.dart' as path;
 
 class Avatar extends StatefulWidget {
   const Avatar({
     super.key,
     required this.imageUrl,
-    required this.onUpload,
+    required this.onImageSelected, // تغيير إلى تمرير File بدلاً من URL
   });
 
   final String? imageUrl;
-  final void Function(String imageUrl) onUpload;
+  final void Function(File? imageFile) onImageSelected;
 
   @override
   _AvatarState createState() => _AvatarState();
@@ -21,121 +19,36 @@ class Avatar extends StatefulWidget {
 
 class _AvatarState extends State<Avatar> {
   final _picker = ImagePicker();
-  final _supabase = Supabase.instance.client;
-  bool _isUploading = false;
+  File? _selectedImage;
 
-  Future<bool> _requestStoragePermission() async {
-    print('Checking storage permission status...');
-    PermissionStatus status = await Permission.photos.status;
-    print('Photos permission status: $status');
-
+  Future<bool> _requestGalleryPermission() async {
+    final status = await Permission.photos.request();
     if (status.isGranted) {
-      print('Photos permission already granted');
-      return true;
-    }
-    if (status.isPermanentlyDenied) {
-      print('Photos permission permanently denied');
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('الرجاء السماح بالوصول إلى الصور من الإعدادات'),
-          action: SnackBarAction(
-            label: 'الإعدادات',
-            onPressed: openAppSettings,
-          ),
-        ),
-      );
-      return false;
-    }
-
-    status = await Permission.photos.request();
-    print('Photos permission request result: $status');
-
-    if (status.isGranted) {
-      print('Permission granted');
       return true;
     } else if (status.isPermanentlyDenied) {
-      print('Permission permanently denied');
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('الرجاء السماح بالوصول إلى الصور من الإعدادات'),
-          action: SnackBarAction(
-            label: 'الإعدادات',
-            onPressed: openAppSettings,
-          ),
+        SnackBar(
+          content: const Text('يرجى السماح بالوصول إلى المعرض من الإعدادات'),
+          action: SnackBarAction(label: 'الإعدادات', onPressed: openAppSettings),
         ),
       );
-      return false;
     } else {
-      print('Permission denied');
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('يجب السماح بالوصول إلى الصور لاختيار الصورة'),
-        ),
+        const SnackBar(content: Text('يرجى السماح بالوصول إلى المعرض')),
       );
-      return false;
     }
+    return false;
   }
 
-  Future<void> _pickAndUploadImage() async {
-    print('Starting image picking process...');
-    final hasPermission = await _requestStoragePermission();
-    if (!hasPermission) {
-      print('Permission denied, aborting');
-      return;
-    }
+  Future<void> _pickImage() async {
+    if (!(await _requestGalleryPermission())) return;
 
-    setState(() {
-      _isUploading = true;
-    });
-
-    try {
-      print('Opening gallery...');
-      final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
-      if (image == null) {
-        print('No image selected');
-        setState(() {
-          _isUploading = false;
-        });
-        return;
-      }
-
-      print('Image picked: ${image.path}');
-      final imageFile = File(image.path);
-      final imageBytes = await imageFile.readAsBytes();
-      final imageExtension = path.extension(image.path).toLowerCase().replaceFirst('.', '');
-
-      final userId = _supabase.auth.currentUser?.id ?? DateTime.now().millisecondsSinceEpoch.toString();
-      final imagePath = '$userId-profile.png';
-
-      print('Uploading image to Supabase Storage...');
-      await _supabase.storage
-          .from('avatar-url')
-          .uploadBinary(
-            imagePath,
-            imageBytes,
-            fileOptions: FileOptions(
-              upsert: true,
-              contentType: 'image/$imageExtension',
-            ),
-          );
-
-      print('Getting public URL...');
-      String imageUrl = _supabase.storage.from('avatar-url').getPublicUrl(imagePath);
-      imageUrl = Uri.parse(imageUrl)
-          .replace(queryParameters: {'t': DateTime.now().millisecondsSinceEpoch.toString()})
-          .toString();
-
-      print('Image uploaded successfully: $imageUrl');
-      widget.onUpload(imageUrl);
-    } catch (e) {
-      print('Error during image upload: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('خطأ في رفع الصورة: $e')),
-      );
-    } finally {
+    final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
+    if (image != null) {
       setState(() {
-        _isUploading = false;
+        _selectedImage = File(image.path);
       });
+      widget.onImageSelected(_selectedImage);
     }
   }
 
@@ -144,30 +57,27 @@ class _AvatarState extends State<Avatar> {
     return Column(
       children: [
         GestureDetector(
-          onTap: _isUploading ? null : _pickAndUploadImage,
-          child: SizedBox(
+          onTap: _pickImage,
+          child: Container(
             width: 150,
             height: 150,
-            child: _isUploading
-                ? const Center(child: CircularProgressIndicator())
-                : widget.imageUrl != null
-                    ? Image.network(
-                        widget.imageUrl!,
-                        fit: BoxFit.cover,
-                        errorBuilder: (context, error, stackTrace) => const Icon(Icons.error),
-                      )
-                    : Container(
-                        color: Colors.grey,
-                        child: const Center(
-                          child: Text('No Image'),
-                        ),
-                      ),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.brown, width: 2),
+            ),
+            child: ClipOval(
+              child: _selectedImage != null
+                  ? Image.file(_selectedImage!, fit: BoxFit.cover, width: 150, height: 150)
+                  : widget.imageUrl != null
+                      ? Image.network(widget.imageUrl!, fit: BoxFit.cover, width: 150, height: 150)
+                      : const Icon(Icons.camera_alt, size: 50, color: Colors.grey),
+            ),
           ),
         ),
         const SizedBox(height: 12),
         ElevatedButton(
-          onPressed: _isUploading ? null : _pickAndUploadImage,
-          child: const Text('رفع الصورة'),
+          onPressed: _pickImage,
+          child: const Text('اختيار صورة الملف الشخصي'),
         ),
       ],
     );
