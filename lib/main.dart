@@ -52,7 +52,7 @@ class MyApp extends StatelessWidget {
         '/signup': (context) => const SignUpScreen(),
         '/home': (context) => const HomeScreen(),
         '/post': (context) => const PostScreen(),
-      },
+            },
       onGenerateRoute: (settings) {
         if (settings.name == '/comments') {
           final args = settings.arguments as Map<String, dynamic>;

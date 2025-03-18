@@ -1,7 +1,6 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:qahwatahlly/screens/components/avatar.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:image_picker/image_picker.dart';
 
 class SignUpScreen extends StatefulWidget {
   const SignUpScreen({super.key});
@@ -17,34 +16,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _supabase = Supabase.instance.client;
-  File? _avatarImage;
-  final ImagePicker _picker = ImagePicker();
-
-  Future<void> _pickImage() async {
-    final pickedFile = await _picker.pickImage(source: ImageSource.gallery);
-    if (pickedFile != null) {
-      setState(() {
-        _avatarImage = File(pickedFile.path);
-      });
-    }
-  }
-
-  Future<String?> _uploadAvatar() async {
-    if (_avatarImage == null) return null;
-    try {
-      final userId = _supabase.auth.currentUser?.id ?? DateTime.now().millisecondsSinceEpoch.toString();
-      final fileName = '$userId-avatar.png';
-      await _supabase.storage.from('avatar-url').upload(fileName, _avatarImage!);
-      final publicUrl = _supabase.storage.from('avatar-url').getPublicUrl(fileName);
-      return publicUrl;
-    } catch (e) {
-      print('Error uploading avatar: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('خطأ في رفع الصورة: $e')),
-      );
-      return null;
-    }
-  }
+  String? _avatarUrl;
 
   Future<void> _signUp() async {
     try {
@@ -53,14 +25,13 @@ class _SignUpScreenState extends State<SignUpScreen> {
         password: _passwordController.text,
       );
       if (response.user != null) {
-        final avatarUrl = await _uploadAvatar();
         await _supabase.from('profiles').insert({
           'id': response.user!.id,
           'full_name': _fullNameController.text,
           'username': _usernameController.text,
           'email': _emailController.text,
           'bio': _bioController.text,
-          'avatar_url': avatarUrl,
+          'avatar_url': _avatarUrl,
         });
         Navigator.pushReplacementNamed(context, '/home');
       }
@@ -95,15 +66,13 @@ class _SignUpScreenState extends State<SignUpScreen> {
             ),
             const SizedBox(height: 30),
             Center(
-              child: GestureDetector(
-                onTap: _pickImage,
-                child: CircleAvatar(
-                  radius: 50,
-                  backgroundImage: _avatarImage != null ? FileImage(_avatarImage!) : null,
-                  child: _avatarImage == null
-                      ? const Icon(Icons.camera_alt, size: 40, color: Colors.grey)
-                      : null,
-                ),
+              child: Avatar(
+                imageUrl: _avatarUrl,
+                onUpload: (imageUrl) {
+                  setState(() {
+                    _avatarUrl = imageUrl;
+                  });
+                },
               ),
             ),
             const SizedBox(height: 16),
