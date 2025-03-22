@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/comment_service.dart';
 import '../models/comment.dart';
 
@@ -26,78 +25,13 @@ class CommentsDialog extends StatefulWidget {
 class _CommentsDialogState extends State<CommentsDialog> {
   final _commentService = CommentService();
   final _commentController = TextEditingController();
-  List<Comment> _comments = [];
   String? _replyToCommentId;
   String? _replyToUsername;
-  RealtimeChannel? _commentsChannel;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadComments();
-    _setupRealtime();
-  }
 
   @override
   void dispose() {
-    _commentsChannel?.unsubscribe();
+    _commentController.dispose();
     super.dispose();
-  }
-
-  Future<void> _loadComments() async {
-    try {
-      _comments = await _commentService.loadComments(widget.postId);
-      setState(() {});
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ في تحميل التعليقات: $e')));
-    }
-  }
-
-  void _setupRealtime() {
-    _commentsChannel = Supabase.instance.client
-        .channel('public:comments')
-        .onPostgresChanges(
-          event: PostgresChangeEvent.insert,
-          schema: 'public',
-          table: 'comments',
-          filter: PostgresChangeFilter(
-            type: PostgresChangeFilterType.eq,
-            column: 'post_id',
-            value: int.parse(widget.postId),
-          ),
-          callback: (payload) async {
-            final newCommentData = payload.newRecord;
-            final profile = await Supabase.instance.client
-                .from('profiles')
-                .select('username, avatar_url')
-                .eq('id', newCommentData['user_id'])
-                .maybeSingle();
-
-            final newComment = Comment(
-              id: newCommentData['id'].toString(),
-              postId: newCommentData['post_id'].toString(),
-              userId: newCommentData['user_id'],
-              content: newCommentData['content'],
-              parentCommentId: newCommentData['parent_comment_id']?.toString(),
-              createdAt: DateTime.parse(newCommentData['created_at']),
-              username: profile?['username'] ?? 'مجهول',
-              avatarUrl: profile?['avatar_url'],
-              likesCount: 0,
-              isLiked: false,
-            );
-
-            setState(() {
-              _comments.add(newComment);
-            });
-          },
-        )
-        .subscribe((status, [error]) {
-          if (status == RealtimeSubscribeStatus.subscribed) {
-            print('Subscribed to comments for post ${widget.postId}');
-          } else if (error != null) {
-            print('Error subscribing to comments: $error');
-          }
-        });
   }
 
   Future<void> _addComment() async {
@@ -105,8 +39,10 @@ class _CommentsDialogState extends State<CommentsDialog> {
     try {
       await _commentService.addComment(widget.postId, _commentController.text, parentCommentId: _replyToCommentId);
       _commentController.clear();
-      _replyToCommentId = null;
-      _replyToUsername = null;
+      setState(() {
+        _replyToCommentId = null;
+        _replyToUsername = null;
+      });
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ في إضافة التعليق: $e')));
     }
@@ -115,7 +51,6 @@ class _CommentsDialogState extends State<CommentsDialog> {
   Future<void> _toggleLike(String commentId, bool isLiked) async {
     try {
       await _commentService.toggleCommentLike(commentId, isLiked);
-      _loadComments();
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ في الإعجاب: $e')));
     }
@@ -143,75 +78,85 @@ class _CommentsDialogState extends State<CommentsDialog> {
               const SizedBox(height: 16),
               SizedBox(
                 height: MediaQuery.of(context).size.height * 0.5,
-                child: _comments.isEmpty
-                    ? const Center(child: Text('لا توجد تعليقات بعد'))
-                    : ListView.builder(
-                        itemCount: _comments.length,
-                        itemBuilder: (context, index) {
-                          final comment = _comments[index];
-                          final isReply = comment.parentCommentId != null;
-                          return Padding(
-                            padding: EdgeInsets.only(right: isReply ? 32.0 : 0.0, bottom: 8.0),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                CircleAvatar(
-                                  radius: 16,
-                                  backgroundImage: comment.avatarUrl != null ? NetworkImage(comment.avatarUrl!) : null,
-                                  child: comment.avatarUrl == null ? Text(comment.username[0]) : null,
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.end,
-                                    children: [
-                                      Row(
-                                        mainAxisAlignment: MainAxisAlignment.end,
-                                        children: [
-                                          Text(_timeAgo(comment.createdAt), style: Theme.of(context).textTheme.bodySmall),
-                                          const SizedBox(width: 8),
-                                          Text(comment.username,
-                                              style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.black)),
-                                        ],
-                                      ),
-                                      Text(comment.content, style: Theme.of(context).textTheme.bodyMedium),
-                                      Row(
-                                        mainAxisAlignment: MainAxisAlignment.end,
-                                        children: [
-                                          TextButton(
-                                            onPressed: () => _toggleLike(comment.id, comment.isLiked),
-                                            child: Row(
-                                              children: [
-                                                Icon(
-                                                  comment.isLiked ? Icons.favorite : Icons.favorite_border,
-                                                  color: comment.isLiked ? Colors.red : null,
-                                                  size: 16,
-                                                ),
-                                                const SizedBox(width: 4),
-                                                Text('${comment.likesCount} إعجاب'),
-                                              ],
-                                            ),
+                child: StreamBuilder<List<Comment>>(
+                  stream: _commentService.getCommentsStream(widget.postId),
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                      return const Center(child: Text('لا توجد تعليقات بعد'));
+                    }
+                    final comments = snapshot.data!;
+                    return ListView.builder(
+                      itemCount: comments.length,
+                      itemBuilder: (context, index) {
+                        final comment = comments[index];
+                        final isReply = comment.parentCommentId != null;
+                        return Padding(
+                          padding: EdgeInsets.only(right: isReply ? 32.0 : 0.0, bottom: 8.0),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              CircleAvatar(
+                                radius: 16,
+                                backgroundImage: comment.avatarUrl != null ? NetworkImage(comment.avatarUrl!) : null,
+                                child: comment.avatarUrl == null ? Text(comment.username[0]) : null,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.end,
+                                      children: [
+                                        Text(_timeAgo(comment.createdAt), style: Theme.of(context).textTheme.bodySmall),
+                                        const SizedBox(width: 8),
+                                        Text(comment.username,
+                                            style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.black)),
+                                      ],
+                                    ),
+                                    Text(comment.content, style: Theme.of(context).textTheme.bodyMedium),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.end,
+                                      children: [
+                                        TextButton(
+                                          onPressed: () => _toggleLike(comment.id, comment.isLiked),
+                                          child: Row(
+                                            children: [
+                                              Icon(
+                                                comment.isLiked ? Icons.favorite : Icons.favorite_border,
+                                                color: comment.isLiked ? Colors.red : null,
+                                                size: 16,
+                                              ),
+                                              const SizedBox(width: 4),
+                                              Text('${comment.likesCount} إعجاب'),
+                                            ],
                                           ),
-                                          TextButton(
-                                            onPressed: () {
-                                              setState(() {
-                                                _replyToCommentId = comment.id;
-                                                _replyToUsername = comment.username;
-                                                _commentController.text = '@${comment.username} ';
-                                              });
-                                            },
-                                            child: const Text('رد'),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
+                                        ),
+                                        TextButton(
+                                          onPressed: () {
+                                            setState(() {
+                                              _replyToCommentId = comment.id;
+                                              _replyToUsername = comment.username;
+                                              _commentController.text = '@${comment.username} ';
+                                            });
+                                          },
+                                          child: const Text('رد'),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
                                 ),
-                              ],
-                            ),
-                          );
-                        },
-                      ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
               ),
               const SizedBox(height: 16),
               if (_replyToUsername != null)

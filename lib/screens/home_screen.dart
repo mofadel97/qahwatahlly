@@ -5,6 +5,8 @@ import '../widgets/post_card.dart';
 import '../widgets/new_post_dialog.dart';
 import '../services/post_service.dart';
 import '../theme/app_theme.dart';
+import '../main.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -18,59 +20,113 @@ class _HomeScreenState extends State<HomeScreen> {
   List<Post> _posts = [];
   String? _userAvatarUrl;
   bool _isDarkMode = false;
+  bool _isLoading = false;
+  bool _isLoadingMore = false;
+  int _currentOffset = 0;
+  final int _limit = 10;
+  bool _hasMorePosts = true;
   RealtimeChannel? _postsChannel;
-  RealtimeChannel? _commentsChannel;
+  final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
     super.initState();
-    _loadUserProfile();
-    _loadPosts();
+    _loadDataWithDelay();
     _setupRealtime();
+    _scrollController.addListener(_onScroll);
   }
 
   @override
   void dispose() {
     _postsChannel?.unsubscribe();
-    _commentsChannel?.unsubscribe();
+    _scrollController.dispose();
     super.dispose();
   }
 
-  Future<void> _loadUserProfile() async {
-    _userAvatarUrl = await _postService.loadUserProfile();
-    setState(() {});
+  void _onScroll() {
+    if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 200 && !_isLoadingMore && _hasMorePosts) {
+      _loadMorePosts();
+    }
   }
 
-  Future<void> _loadPosts() async {
-    _posts = await _postService.loadPosts();
-    setState(() {});
+  Future<void> _loadDataWithDelay() async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    while (!isSupabaseInitialized) {
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+
+    try {
+      await Future.wait([
+        _loadUserProfile(),
+        _loadInitialPosts(),
+      ]);
+    } catch (e) {
+      print('Error loading data: $e');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ في تحميل البيانات: $e')));
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _loadUserProfile() async {
+    try {
+      final avatarUrl = await _postService.loadUserProfile();
+      setState(() {
+        _userAvatarUrl = avatarUrl;
+      });
+    } catch (e) {
+      print('Error loading user profile: $e');
+      throw 'خطأ في تحميل الملف الشخصي: $e';
+    }
+  }
+
+  Future<void> _loadInitialPosts() async {
+    try {
+      final posts = await _postService.loadPosts(limit: _limit, offset: 0);
+      setState(() {
+        _posts = posts;
+        _currentOffset = posts.length;
+        _hasMorePosts = posts.length == _limit;
+      });
+    } catch (e) {
+      print('Error loading initial posts: $e');
+      throw 'خطأ في تحميل المنشورات: $e';
+    }
+  }
+
+  Future<void> _loadMorePosts() async {
+    if (_isLoadingMore || !_hasMorePosts) return;
+
+    setState(() {
+      _isLoadingMore = true;
+    });
+
+    try {
+      final morePosts = await _postService.loadPosts(limit: _limit, offset: _currentOffset);
+      setState(() {
+        _posts.addAll(morePosts);
+        _currentOffset = _posts.length;
+        _hasMorePosts = morePosts.length == _limit;
+      });
+    } catch (e) {
+      print('Error loading more posts: $e');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ في تحميل المزيد من المنشورات: $e')));
+    } finally {
+      setState(() {
+        _isLoadingMore = false;
+      });
+    }
   }
 
   void _setupRealtime() {
-    _postsChannel = _postService.setupRealtime(_loadPosts);
-    _commentsChannel = Supabase.instance.client
-        .channel('public:comments')
-        .onPostgresChanges(
-          event: PostgresChangeEvent.insert,
-          schema: 'public',
-          table: 'comments',
-          callback: (payload) {
-            final postId = payload.newRecord['post_id'].toString();
-            final index = _posts.indexWhere((post) => post.id == postId);
-            if (index != -1) {
-              setState(() {
-                _posts[index].commentsCount += 1;
-              });
-            }
-          },
-        )
-        .subscribe((status, [error]) {
-          if (status == RealtimeSubscribeStatus.subscribed) {
-            print('Subscribed to comments channel in HomeScreen');
-          } else if (error != null) {
-            print('Error subscribing to comments: $error');
-          }
-        });
+    _postsChannel = _postService.setupRealtime(() async {
+      await _loadInitialPosts();
+    });
   }
 
   void _toggleLike(String postId, bool isLiked, int index) async {
@@ -106,31 +162,40 @@ class _HomeScreenState extends State<HomeScreen> {
             _buildAppBar(),
             _buildNavBar(),
             SliverToBoxAdapter(
-              child: _posts.isEmpty
+              child: _isLoading
                   ? const Padding(
                       padding: EdgeInsets.all(20.0),
                       child: Center(child: CircularProgressIndicator()),
                     )
-                  : SizedBox(
-                      height: MediaQuery.of(context).size.height - 200,
-                      child: ListView.builder(
-                        itemCount: _posts.length,
-                        itemBuilder: (context, index) {
-                          return PostCard(
-                            post: _posts[index],
-                            onToggleLike: _toggleLike,
-                            onDelete: _deletePost,
-                          );
-                        },
-                      ),
-                    ),
+                  : _posts.isEmpty
+                      ? const Padding(
+                          padding: EdgeInsets.all(20.0),
+                          child: Center(child: Text('لا توجد منشورات بعد')),
+                        )
+                      : SizedBox(
+                          height: MediaQuery.of(context).size.height - 200,
+                          child: ListView.builder(
+                            controller: _scrollController,
+                            itemCount: _posts.length + (_hasMorePosts ? 1 : 0),
+                            itemBuilder: (context, index) {
+                              if (index == _posts.length && _hasMorePosts) {
+                                return const Center(child: CircularProgressIndicator());
+                              }
+                              return PostCard(
+                                post: _posts[index],
+                                onToggleLike: (postId, isLiked, _) => _toggleLike(postId, isLiked, index),
+                                onDelete: (postId, _) => _deletePost(postId, index),
+                              );
+                            },
+                          ),
+                        ),
             ),
           ],
         ),
         floatingActionButton: FloatingActionButton.extended(
           backgroundColor: _isDarkMode ? Colors.red[900] : Colors.red[600],
           elevation: 6,
-          onPressed: () => NewPostDialog.show(context, onPostSubmitted: _loadPosts),
+          onPressed: () => NewPostDialog.show(context, onPostSubmitted: _loadInitialPosts),
           icon: const Icon(Icons.add, color: Colors.white),
           label: const Text('منشور جديد', style: TextStyle(color: Colors.white)),
         ),
@@ -192,7 +257,14 @@ class _HomeScreenState extends State<HomeScreen> {
             Icon(Icons.message, color: _isDarkMode ? Colors.white : Colors.grey, size: 36),
             Icon(Icons.sports_soccer, color: _isDarkMode ? Colors.white : Colors.grey, size: 36),
             _buildIconWithLabel(Icons.mic, 'قريبًا'),
-            _buildIconWithLabel(Icons.video_library, 'قريبًا'),
+            GestureDetector(
+              onTap: () {
+                if (context.mounted) {
+                  Navigator.pushNamed(context, '/reels');
+                }
+              },
+              child: Icon(Icons.video_library, color: _isDarkMode ? Colors.white : Colors.grey, size: 36),
+            ),
             Column(
               children: [
                 Icon(Icons.home, color: _isDarkMode ? Colors.red[700] : Colors.red[600], size: 36),
@@ -200,10 +272,14 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
             GestureDetector(
-              onTap: () => Navigator.pushNamed(context, '/profile'),
+              onTap: () {
+                if (context.mounted) {
+                  Navigator.pushNamed(context, '/profile');
+                }
+              },
               child: CircleAvatar(
                 radius: 18,
-                backgroundImage: _userAvatarUrl != null ? NetworkImage(_userAvatarUrl!) : null,
+                backgroundImage: _userAvatarUrl != null ? CachedNetworkImageProvider(_userAvatarUrl!) : null,
                 backgroundColor: _isDarkMode ? Colors.grey[700] : Colors.grey[300],
                 child: _userAvatarUrl == null ? const Icon(Icons.person, color: Colors.white) : null,
               ),

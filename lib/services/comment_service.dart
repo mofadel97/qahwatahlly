@@ -4,6 +4,62 @@ import '../models/comment.dart';
 class CommentService {
   final _supabase = Supabase.instance.client;
 
+  // جلب التعليقات كـ Stream لـ CommentsDialog
+  Stream<List<Comment>> getCommentsStream(String postId) {
+    return _supabase
+        .from('comments')
+        .stream(primaryKey: ['id'])
+        .eq('post_id', int.parse(postId))
+        .order('created_at', ascending: true)
+        .asyncMap((comments) async {
+      final userId = _supabase.auth.currentUser?.id;
+      return Future.wait(comments.map((comment) async {
+        final profile = await _supabase
+            .from('profiles')
+            .select('username, avatar_url')
+            .eq('id', comment['user_id'])
+            .maybeSingle();
+
+        final likesCount = await _supabase
+            .from('comment_likes')
+            .select('id')
+            .eq('comment_id', comment['id'])
+            .count();
+
+        final userLike = userId != null
+            ? await _supabase
+                .from('comment_likes')
+                .select('id')
+                .eq('comment_id', comment['id'])
+                .eq('user_id', userId)
+                .maybeSingle()
+            : null;
+
+        return Comment(
+          id: comment['id'].toString(),
+          postId: comment['post_id'].toString(),
+          userId: comment['user_id'],
+          content: comment['content'],
+          parentCommentId: comment['parent_comment_id']?.toString(),
+          createdAt: DateTime.parse(comment['created_at']),
+          username: profile?['username'] ?? 'مجهول',
+          avatarUrl: profile?['avatar_url'],
+          likesCount: likesCount.count,
+          isLiked: userLike != null,
+        );
+      }));
+    });
+  }
+
+  // جلب عدد التعليقات كـ Stream لـ PostCard
+  Stream<int> getCommentsCountStream(String postId) {
+    return _supabase
+        .from('comments')
+        .stream(primaryKey: ['id'])
+        .eq('post_id', int.parse(postId))
+        .map((comments) => comments.length);
+  }
+
   Future<List<Comment>> loadComments(String postId) async {
     try {
       final userId = _supabase.auth.currentUser?.id;

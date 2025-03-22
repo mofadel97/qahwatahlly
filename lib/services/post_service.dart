@@ -1,60 +1,90 @@
 import 'dart:ui';
-
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/post.dart';
 
 class PostService {
   final _supabase = Supabase.instance.client;
 
-  Future<List<Post>> loadPosts() async {
+  Future<List<Post>> loadPosts({int limit = 10, int offset = 0}) async {
     try {
       final userId = _supabase.auth.currentUser?.id;
+
+      // جلب المنشورات مع بيانات الملف الشخصي في طلب واحد باستخدام العلاقات
       final response = await _supabase
           .from('posts')
-          .select('id, content, image_url, user_id, created_at')
-          .order('created_at', ascending: false);
+          .select('''
+            id, content, image_url, user_id, created_at,
+            profiles!posts_user_id_fkey(username, avatar_url),
+            likes!likes_post_id_fkey(id, user_id),
+            comments!comments_post_id_fkey(id)
+          ''')
+          .order('created_at', ascending: false)
+          .range(offset, offset + limit - 1);
 
-      return Future.wait(response.map((post) async {
-        final profile = await _supabase
-            .from('profiles')
-            .select('username, avatar_url')
-            .eq('id', post['user_id'])
-            .maybeSingle();
-
-        final likesCount = await _supabase
-            .from('likes')
-            .select('id')
-            .eq('post_id', post['id'])
-            .count();
-
+      return response.map((post) {
+        final likes = post['likes'] as List<dynamic>;
+        final comments = post['comments'] as List<dynamic>;
+        final likesCount = likes.length;
         final userLike = userId != null
-            ? await _supabase
-                .from('likes')
-                .select('id')
-                .eq('post_id', post['id'])
-                .eq('user_id', userId)
-                .maybeSingle()
-            : null;
-
-        final commentsCount = await _supabase
-            .from('comments')
-            .select('id')
-            .eq('post_id', post['id'])
-            .count();
+            ? likes.any((like) => like['user_id'] == userId)
+            : false;
 
         return Post(
           id: post['id'].toString(),
           content: post['content'] ?? '',
           imageUrl: post['image_url'],
-          username: profile?['username'] ?? 'مجهول',
-          likesCount: likesCount.count,
-          isLiked: userLike != null,
-          avatarUrl: profile?['avatar_url'],
+          username: post['profiles']?['username'] ?? 'مجهول',
+          likesCount: likesCount,
+          isLiked: userLike,
+          avatarUrl: post['profiles']?['avatar_url'],
           createdAt: DateTime.parse(post['created_at']),
-          commentsCount: commentsCount.count,
+          commentsCount: comments.length,
         );
-      }));
+      }).toList();
     } catch (e) {
+      print('Error in loadPosts: $e');
+      rethrow;
+    }
+  }
+
+  Future<List<Post>> loadUserPosts({int limit = 10, int offset = 0}) async {
+    final userId = _supabase.auth.currentUser?.id;
+    if (userId == null) throw 'يرجى تسجيل الدخول';
+
+    try {
+      // جلب منشورات المستخدم مع بيانات الملف الشخصي في طلب واحد
+      final response = await _supabase
+          .from('posts')
+          .select('''
+            id, content, image_url, user_id, created_at,
+            profiles!posts_user_id_fkey(username, avatar_url),
+            likes!likes_post_id_fkey(id, user_id),
+            comments!comments_post_id_fkey(id)
+          ''')
+          .eq('user_id', userId)
+          .order('created_at', ascending: false)
+          .range(offset, offset + limit - 1);
+
+      return response.map((post) {
+        final likes = post['likes'] as List<dynamic>;
+        final comments = post['comments'] as List<dynamic>;
+        final likesCount = likes.length;
+        final userLike = likes.any((like) => like['user_id'] == userId);
+
+        return Post(
+          id: post['id'].toString(),
+          content: post['content'] ?? '',
+          imageUrl: post['image_url'],
+          username: post['profiles']?['username'] ?? 'مجهول',
+          likesCount: likesCount,
+          isLiked: userLike,
+          avatarUrl: post['profiles']?['avatar_url'],
+          createdAt: DateTime.parse(post['created_at']),
+          commentsCount: comments.length,
+        );
+      }).toList();
+    } catch (e) {
+      print('Error in loadUserPosts: $e');
       rethrow;
     }
   }
@@ -68,6 +98,7 @@ class PostService {
       }
       return null;
     } catch (e) {
+      print('Error in loadUserProfile: $e');
       rethrow;
     }
   }
@@ -95,6 +126,7 @@ class PostService {
         await _supabase.from('likes').insert({'post_id': int.parse(postId), 'user_id': userId});
       }
     } catch (e) {
+      print('Error in toggleLike: $e');
       rethrow;
     }
   }
@@ -103,6 +135,7 @@ class PostService {
     try {
       await _supabase.from('posts').delete().eq('id', int.parse(postId));
     } catch (e) {
+      print('Error in deletePost: $e');
       rethrow;
     }
   }

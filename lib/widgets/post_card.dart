@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/post.dart';
+import '../services/comment_service.dart';
 import 'comments_dialog.dart';
 
 class PostCard extends StatelessWidget {
@@ -19,6 +20,8 @@ class PostCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final commentService = CommentService();
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
       child: Card(
@@ -84,10 +87,16 @@ class PostCard extends StatelessWidget {
                     icon: const Icon(Icons.share),
                     label: const Text('مشاركة'),
                   ),
-                  TextButton.icon(
-                    onPressed: () => CommentsDialog.show(context, post.id),
-                    icon: const Icon(Icons.comment),
-                    label: Text('${post.commentsCount} تعليق'),
+                  StreamBuilder<int>(
+                    stream: commentService.getCommentsCountStream(post.id),
+                    initialData: post.commentsCount,
+                    builder: (context, snapshot) {
+                      return TextButton.icon(
+                        onPressed: () => CommentsDialog.show(context, post.id),
+                        icon: const Icon(Icons.comment),
+                        label: Text('${snapshot.data ?? 0} تعليق'),
+                      );
+                    },
                   ),
                   TextButton.icon(
                     onPressed: () => onToggleLike(post.id, post.isLiked, -1), // سيتم تمرير index من ListView.builder
